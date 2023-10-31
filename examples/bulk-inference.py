@@ -57,12 +57,12 @@ class HPCPerformanceDataset(Dataset):
         return len(self.examples)
 
     def __getitem__(self, idx):
-        return self.examples.at[idx, 'instructions']['content'], self.examples.at[idx, 'instructions']['answer']
+        return self.examples.at[idx, 'id'], self.examples.at[idx, 'instructions']['content'], self.examples.at[idx, 'instructions']['answer']
 
     def get_item_by_cat(self, cat, idx):
         #returns the respective item with the given category and index
         item = self.examples[self.examples['category'] == cat].iloc[idx]
-        return item['instructions']['content'], item['instructions']['answer']
+        return self.examples.at[idx, 'id'], item['instructions']['content'], item['instructions']['answer']
 
 def main(
     model_name,
@@ -127,8 +127,8 @@ def main(
     tokenizer.pad_token = tokenizer.eos_token
 
     dataset = HPCPerformanceDataset(prompts)
-    dataLoader = DataLoader(dataset, batch_size=4, shuffle=False)
-    prompt, answer = next(iter(dataLoader))
+    dataLoader = DataLoader(dataset, batch_size=2, shuffle=False)
+    #id, prompt, answer = next(iter(dataLoader))
     
     #safety_checker = get_safety_checker(enable_azure_content_safety,
     #                                    enable_sensitive_topics,
@@ -152,40 +152,46 @@ def main(
 
         
     #batch = tokenizer(prompt, padding='max_length', max_length=max_padding_length, return_tensors="pt")
-    batch = tokenizer(prompt, padding=True, return_tensors="pt")
-
-    batch = {k: v.to("cuda") for k, v in batch.items()}
-    start = time.perf_counter()
-    with torch.no_grad():
-        outputs = model.generate(
-            **batch,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            top_p=top_p,
-            temperature=temperature,
-            min_length=min_length,
-            use_cache=use_cache,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            length_penalty=length_penalty,
-            **kwargs 
-        )
-    e2e_inference_time = (time.perf_counter()-start)*1000
+    e2e_inference_time = 0
+    for ids, prompt, answer in dataLoader:
+      batch = tokenizer(prompt, padding=True, return_tensors="pt")
+      batch = {k: v.to("cuda") for k, v in batch.items()}
+      start = time.perf_counter()
+      with torch.no_grad():
+          outputs = model.generate(
+              **batch,
+              max_new_tokens=max_new_tokens,
+              do_sample=do_sample,
+              top_p=top_p,
+              temperature=temperature,
+              min_length=min_length,
+              use_cache=use_cache,
+              top_k=top_k,
+              repetition_penalty=repetition_penalty,
+              length_penalty=length_penalty,
+              **kwargs 
+          )
+      e2e_inference_time = e2e_inference_time + (time.perf_counter()-start)*1000
+      output_texts = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+      print(prompt, output_texts)
+      for i, id in enumerate(ids):
+         prompts[prompts['id'] == id]['output'] = output_texts[i]
+         prompts[prompts['id'] == id]['model'] = model_name
+      
+      # Safety check of the model output
+      #safety_results = [check(output_text) for check in safety_checker]
+      #are_safe = all([r[1] for r in safety_results])
+      #if are_safe:
+        #print("User input and model output deemed safe.")
+        #print(f"Model output:\n{output_text}")
+      #else:
+      #    print("Model output deemed unsafe.")
+      #    for method, is_safe, report in safety_results:
+      #        if not is_safe:
+      #            print(method)
+      #            print(report)
     print(f"the inference time is {e2e_inference_time} ms")
-    output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Safety check of the model output
-    #safety_results = [check(output_text) for check in safety_checker]
-    #are_safe = all([r[1] for r in safety_results])
-    #if are_safe:
-      #print("User input and model output deemed safe.")
-    print(f"Model output:\n{output_text}")
-    #else:
-    #    print("Model output deemed unsafe.")
-    #    for method, is_safe, report in safety_results:
-    #        if not is_safe:
-    #            print(method)
-    #            print(report)
+    prompts.to_csv(output_file, index=False)
                 
 
 if __name__ == "__main__":
